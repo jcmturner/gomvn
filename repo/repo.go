@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -39,6 +40,9 @@ func SHA1(furl string, b []byte, cl *http.Client) (bool, error) {
 	mdsha1, err := r.ReadString('\n')
 	if err != nil && err != io.EOF {
 		return false, fmt.Errorf("error reading content of sha1 file %s: %v", sha1url, err)
+	}
+	if mdsha1 == "" {
+		return false, errors.New("sha1 returned is empty")
 	}
 	mdsha1 = strings.ToLower(strings.TrimSpace(strings.Fields(mdsha1)[0]))
 
