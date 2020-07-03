@@ -9,6 +9,7 @@ import (
 	"hash"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 
 	"github.com/jcmturner/gomvn/metadata"
@@ -16,7 +17,8 @@ import (
 	"github.com/jcmturner/gomvn/repo"
 )
 
-func Upload(repoURL, groupID, artifactID, packaging, version, file, username, password string, cl *http.Client) error {
+func Upload(repoURL, groupID, artifactID, packaging, version, file, username, password string, cl *http.Client) ([]*url.URL, error) {
+	var uploaded []*url.URL
 	if cl == nil {
 		cl = http.DefaultClient
 	}
@@ -25,94 +27,111 @@ func Upload(repoURL, groupID, artifactID, packaging, version, file, username, pa
 	// open readers of the artifact
 	f, err := os.Open(file)
 	if err != nil {
-		return fmt.Errorf("could not open artifact file: %v", err)
+		return uploaded, fmt.Errorf("could not open artifact file: %v", err)
 	}
 	defer f.Close()
 	rw := new(bytes.Buffer)
 	t := io.TeeReader(f, rw)
 
 	// PUT the artifact
-	req, err := http.NewRequest("PUT", versionURL+fileName, t)
+	u, err := url.Parse(versionURL + fileName)
 	if err != nil {
-		return fmt.Errorf("could not create upload request for the artifact")
+		return uploaded, fmt.Errorf("target URL for artifact not avlid: %v", err)
+	}
+	req, err := http.NewRequest("PUT", u.String(), t)
+	if err != nil {
+		return uploaded, fmt.Errorf("could not create upload request for the artifact")
 	}
 	req.SetBasicAuth(username, password)
 	resp, err := cl.Do(req)
 	if err != nil {
-		return fmt.Errorf("error uploading the artifact: %v", err)
+		return uploaded, fmt.Errorf("error uploading the artifact: %v", err)
 	}
 	if resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("return code when uploading the artifact %d", resp.StatusCode)
+		return uploaded, fmt.Errorf("return code when uploading the artifact %d", resp.StatusCode)
 	}
+	uploaded = append(uploaded, u)
 	// PUT artifact hash files
-	err = uploadHashFiles(rw, versionURL, fileName, username, password, cl)
+	us, err := uploadHashFiles(rw, versionURL, fileName, username, password, cl)
 	if err != nil {
-		return err
+		return uploaded, err
 	}
+	uploaded = append(uploaded, us...)
 
 	// PUT POM
 	p := pom.New(groupID, artifactID, version, packaging)
 	pb, err := p.Marshal()
 	if err != nil {
-		return fmt.Errorf("error marshaling pom: %v", err)
+		return uploaded, fmt.Errorf("error marshaling pom: %v", err)
 	}
-	pPath := fmt.Sprintf("%s/%s-%s.pom", versionURL, artifactID, version)
+	purl, err := pom.URL(repoURL, groupID, artifactID, version)
+	if err != nil {
+		return uploaded, fmt.Errorf("URL for POM not valid: %v", err)
+	}
 	prw := new(bytes.Buffer)
 	pt := io.TeeReader(bytes.NewReader(pb), prw)
-	req, err = http.NewRequest("PUT", pPath, pt)
+	req, err = http.NewRequest("PUT", purl.String(), pt)
 	if err != nil {
-		return fmt.Errorf("could not create upload request for %s : %v", pPath, err)
+		return uploaded, fmt.Errorf("could not create upload request for %s : %v", purl.String(), err)
 	}
 	req.SetBasicAuth(username, password)
 	resp, err = cl.Do(req)
 	if err != nil {
-		return fmt.Errorf("error uploading %s : %v", pPath, err)
+		return uploaded, fmt.Errorf("error uploading %s : %v", purl.String(), err)
 	}
 	if resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("uploading %s: return code %d", pPath, resp.StatusCode)
+		return uploaded, fmt.Errorf("uploading %s: return code %d", purl.String(), resp.StatusCode)
 	}
+	uploaded = append(uploaded, purl)
 	// PUT POM hash files
-	pPath = fmt.Sprintf("%s%s/%s/", groupURL, artifactID, version)
 	pomName := fmt.Sprintf("%s-%s.pom", artifactID, version)
-	err = uploadHashFiles(prw, pPath, pomName, username, password, cl)
+	us, err = uploadHashFiles(prw, versionURL, pomName, username, password, cl)
 	if err != nil {
-		return fmt.Errorf("error uploading pom hash files: %v", err)
+		return uploaded, fmt.Errorf("error uploading pom hash files: %v", err)
 	}
+	uploaded = append(uploaded, us...)
 
 	// Generate and PUT metadata
 	md, err := metadata.Generate(repoURL, groupID, artifactID, version, cl)
 	if err != nil {
-		return fmt.Errorf("error updating metadata: %v", err)
+		return uploaded, fmt.Errorf("error updating metadata: %v", err)
 	}
 	mdb, err := md.Marshal()
 	if err != nil {
-		return fmt.Errorf("error marshaling metadata: %v", err)
+		return uploaded, fmt.Errorf("error marshaling metadata: %v", err)
 	}
-	mdPath := fmt.Sprintf("%s/%s/%s", groupURL, artifactID, metadata.MavenMetadataFile)
+	mdPath := fmt.Sprintf("%s%s/%s", groupURL, artifactID, metadata.MavenMetadataFile)
+	murl, err := url.Parse(mdPath)
+	if err != nil {
+		return uploaded, fmt.Errorf("URL for metadata not valid: %v", err)
+	}
 	mdrw := new(bytes.Buffer)
 	mdt := io.TeeReader(bytes.NewReader(mdb), mdrw)
-	req, err = http.NewRequest("PUT", mdPath, mdt)
+	req, err = http.NewRequest("PUT", murl.String(), mdt)
 	if err != nil {
-		return fmt.Errorf("could not create upload request for %s : %v", mdPath, err)
+		return uploaded, fmt.Errorf("could not create upload request for %s : %v", mdPath, err)
 	}
 	req.SetBasicAuth(username, password)
 	resp, err = cl.Do(req)
 	if err != nil {
-		return fmt.Errorf("error uploading %s : %v", mdPath, err)
+		return uploaded, fmt.Errorf("error uploading %s : %v", mdPath, err)
 	}
 	if resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("uploading %s: return code %d", mdPath, resp.StatusCode)
+		return uploaded, fmt.Errorf("uploading %s: return code %d", mdPath, resp.StatusCode)
 	}
+	uploaded = append(uploaded, murl)
 	// PUT metadata hash files
-	mdPath = fmt.Sprintf("%s/%s/", groupURL, artifactID)
-	err = uploadHashFiles(mdrw, mdPath, metadata.MavenMetadataFile, username, password, cl)
+	mdPath = fmt.Sprintf("%s%s/", groupURL, artifactID)
+	us, err = uploadHashFiles(mdrw, mdPath, metadata.MavenMetadataFile, username, password, cl)
 	if err != nil {
-		return fmt.Errorf("error uploading metadata hash files: %v", err)
+		return uploaded, fmt.Errorf("error uploading metadata hash files: %v", err)
 	}
-	return nil
+	uploaded = append(uploaded, us...)
+	return uploaded, nil
 }
 
-func uploadHashFiles(r io.Reader, locationURL, filename, username, password string, cl *http.Client) error {
+func uploadHashFiles(r io.Reader, locationURL, filename, username, password string, cl *http.Client) ([]*url.URL, error) {
+	var uploaded []*url.URL
 	if cl == nil {
 		cl = http.DefaultClient
 	}
@@ -136,20 +155,24 @@ func uploadHashFiles(r io.Reader, locationURL, filename, username, password stri
 		turl := locationURL + filename + "." + h.suffix
 		req, err := hashPutRequest(t, h.hash, turl, username, password)
 		if err != nil {
-			return fmt.Errorf("could not generate request to put %s : %v", turl, err)
+			return uploaded, fmt.Errorf("could not generate request to put %s : %v", turl, err)
 		}
 		resp, err := cl.Do(req)
 		if err != nil {
-			return fmt.Errorf("error uploading %s : %v", turl, err)
+			return uploaded, fmt.Errorf("error uploading %s : %v", turl, err)
 		}
 		if resp.StatusCode != http.StatusCreated {
-			return fmt.Errorf("uploading %s: return code %d", turl, resp.StatusCode)
+			return uploaded, fmt.Errorf("uploading %s: return code %d", turl, resp.StatusCode)
+		}
+		u, err := url.Parse(turl)
+		if err == nil {
+			uploaded = append(uploaded, u)
 		}
 		if i < len(readers) {
 			t = readers[i]
 		}
 	}
-	return nil
+	return uploaded, nil
 }
 
 func hashPutRequest(f io.Reader, h hash.Hash, targetURL, username, password string) (*http.Request, error) {

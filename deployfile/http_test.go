@@ -45,7 +45,7 @@ const (
 	mavenMetaDataSHA1 = "d290cc8eba0504881f1d165820c27fd7ea5b1d0f"
 )
 
-func testServer() *httptest.Server {
+func testServer(badsha bool) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -54,6 +54,10 @@ func testServer() *httptest.Server {
 				w.Write([]byte(mavenMetaData))
 				return
 			case mavenMetadataURL + ".sha1":
+				if badsha {
+					w.Write([]byte("invalid"))
+					return
+				}
 				w.Write([]byte(mavenMetaDataSHA1))
 				return
 			}
@@ -73,7 +77,7 @@ func testServer() *httptest.Server {
 }
 
 func TestUpload(t *testing.T) {
-	s := testServer()
+	s := testServer(false)
 	defer s.Close()
 
 	file, err := ioutil.TempFile(os.TempDir(), "gomvn-test")
@@ -83,8 +87,28 @@ func TestUpload(t *testing.T) {
 	defer os.Remove(file.Name())
 	file.WriteString("mockartifact")
 
-	err = Upload(s.URL, groupID, artifactID, "jar", newVersion, file.Name(), testUsername, testPassword, nil)
+	u, err := Upload(s.URL, groupID, artifactID, "jar", newVersion, file.Name(), testUsername, testPassword, nil)
 	if err != nil {
 		t.Error(err)
+	}
+	if len(u) != 9 {
+		t.Errorf("expected number of uploaded URLs to be 9 actual: %d", len(u))
+	}
+}
+
+func TestUploadInvalidMetadata(t *testing.T) {
+	s := testServer(true)
+	defer s.Close()
+
+	file, err := ioutil.TempFile(os.TempDir(), "gomvn-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(file.Name())
+	file.WriteString("mockartifact")
+
+	_, err = Upload(s.URL, groupID, artifactID, "jar", newVersion, file.Name(), testUsername, testPassword, nil)
+	if err == nil {
+		t.Error("upload should have errored for an invalid sha1 of the metadata")
 	}
 }

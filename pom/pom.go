@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"os"
 
 	"github.com/jcmturner/gomvn/repo"
@@ -71,16 +72,19 @@ func New(groupID, artifactID, version, packaging string) POM {
 	}
 }
 
-func URL(repoURL, groupID, artifactID, version string) string {
+func URL(repoURL, groupID, artifactID, version string) (*url.URL, error) {
 	_, versionURL, _ := repo.ParseCoordinates(repoURL, groupID, artifactID, "", version)
-	return fmt.Sprintf("%s%s-%s.pom", versionURL, artifactID, version)
+	return url.Parse(fmt.Sprintf("%s%s-%s.pom", versionURL, artifactID, version))
 }
 
 func Get(repoURL, groupID, artifactID, version string, cl *http.Client) (p POM, err error) {
-	pomURL := URL(repoURL, groupID, artifactID, version)
+	pomURL, err := URL(repoURL, groupID, artifactID, version)
+	if err != nil {
+		return
+	}
 
 	// Get the POM file
-	req, err := http.NewRequest("GET", pomURL, nil)
+	req, err := http.NewRequest("GET", pomURL.String(), nil)
 	if err != nil {
 		err = fmt.Errorf("error forming request of %s: %v", pomURL, err)
 		return
@@ -104,7 +108,7 @@ func Get(repoURL, groupID, artifactID, version string, cl *http.Client) (p POM, 
 	}
 	resp.Body.Close()
 
-	ok, err := repo.SHA1(pomURL, b, cl)
+	ok, err := repo.SHA1(pomURL.String(), b, cl)
 	if !ok || err != nil {
 		err = fmt.Errorf("integrity check failed: %v", err)
 		return
